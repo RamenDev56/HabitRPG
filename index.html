@@ -387,6 +387,7 @@ h1, h2, h3, .cinzel { font-family: 'DM Sans', sans-serif; }
     </div>
     <div id="topbar-right">
       <div id="freeze-badge">❄️ 0</div>
+      <a class="btn btn-store btn-icon" href="../study-lamp/pomodoro.html" title="Open Study Lamp">🪔</a>
       <button class="btn btn-store btn-icon" onclick="openData()" title="Data">⚙️</button>
     </div>
   </div>
@@ -752,6 +753,14 @@ function streakGapBroken(habit) {
 const STORAGE_KEY = "habitrpg_data_v1";
 const XP_PER_HABIT = 30;
 
+// ── Study Lamp bridge ───────────────────────────────────────────────────
+// Shared localStorage key written by the Study Lamp pomodoro timer (same
+// GitHub Pages origin). Each entry is one completed focus session.
+// HabitRPG consumes the queue and clears it after processing.
+const BRIDGE_KEY = "studylamp_habitrpg_bridge_v1";
+const BRIDGE_HABIT_NAME = "Focus Session (Study Lamp)";
+const FOCUS_SESSION_BONUS_XP = 20; // flat XP for sessions beyond the first same-day one
+
 function defaultState() {
   return {
     habits: {},
@@ -1026,6 +1035,43 @@ const Model = {
 };
 
 /* ════════════════════════════════════════════════════════════════════
+   STUDY LAMP BRIDGE — sync completed focus sessions into a habit
+   ════════════════════════════════════════════════════════════════════ */
+function processBridgeEvents() {
+  let queue = [];
+  try {
+    const raw = localStorage.getItem(BRIDGE_KEY);
+    queue = raw ? JSON.parse(raw) : [];
+  } catch (e) { return; }
+  if (!queue.length) return;
+
+  if (!Model.state.habits[BRIDGE_HABIT_NAME]) {
+    Model.addHabit(BRIDGE_HABIT_NAME, { type: "daily" }, null, ["study-lamp"]);
+  }
+
+  let syncedCount = 0;
+  queue.forEach((evt) => {
+    if (!evt || evt.type !== "focus_complete") return;
+    if (!Model.isCompletedToday(BRIDGE_HABIT_NAME)) {
+      // First focus session today: complete the habit for streak/freeze-token credit.
+      Model.completeHabit(BRIDGE_HABIT_NAME);
+    } else {
+      // Extra sessions the same day still earn XP, without double-counting the streak.
+      Model.state.xp += FOCUS_SESSION_BONUS_XP;
+      Model.updateXp();
+    }
+    syncedCount++;
+  });
+
+  // Clear the queue now that we've processed it, so events aren't re-applied.
+  try { localStorage.setItem(BRIDGE_KEY, "[]"); } catch (e) { /* ignore */ }
+
+  if (syncedCount > 0) {
+    toast(`🔥 ${syncedCount} focus session${syncedCount > 1 ? 's' : ''} synced from Study Lamp — XP earned!`);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
    UI STATE
    ════════════════════════════════════════════════════════════════════ */
 let sortMode = 'default';
@@ -1042,6 +1088,7 @@ function boot() {
   Model.init();
   const newlyArchived = Model.checkExpiredHabits();
   const broken = Model.checkBrokenStreaks();
+  processBridgeEvents();
   applyState();
   if (newlyArchived.length) toast('🎉 ' + newlyArchived.join(', ') + ' completed!');
   if (broken.length) { brokenQueue = [...broken]; showNextBroken(); }
@@ -1049,6 +1096,16 @@ function boot() {
   if (new URLSearchParams(location.search).get('debug') === '1') {
     document.getElementById('debug-tools').style.display = '';
   }
+
+  // If Study Lamp is open in another tab and finishes a session while
+  // HabitRPG is also open, sync it in live instead of waiting for reload.
+  window.addEventListener('storage', (e) => {
+    if (e.key === BRIDGE_KEY && e.newValue && e.newValue !== '[]') {
+      processBridgeEvents();
+      applyState();
+      drawHeatmap();
+    }
+  });
 }
 
 function habitToView(name, h) {
